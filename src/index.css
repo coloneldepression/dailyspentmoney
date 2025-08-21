@@ -1,1 +1,7 @@
-body { margin: 0; font-family: sans-serif; }
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* küçük dokunuşlar */
+:root { color-scheme: light; }
+body { @apply bg-zinc-50 text-zinc-900; }
