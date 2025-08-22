@@ -1,23 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * Telefon odaklı, tek-dosya React uygulaması.
- * Özellikler:
- * - Sınırsız grup ekleme / silme
- * - Grup adı (düzenlenebilir) + atanan sayısal değer (düzenlenebilir)
- * - Grup kartında not alanı (küçük pencere)
- * - Grup üzerinde "tik" (işaretleme) — ortak kasayı etkilemez, sadece görsel
- * - Bir sayısal giriş yapınca, ortak kasaya ETKİ = (grup_değeri - girilen)
- * - Ortak kasa yalnızca MANUEL sıfırlanır
- * - Ortak kasa üstüne tıklayınca, son sıfırlamadan beri tüm işlem geçmişi gösterilir
- * - Yerel depolama (localStorage) ile kalıcılık
- * - JSON dışa/içe aktarma
+ * Tek dosyalık React uygulaması (Vite uyumlu)
+ * Bu sürümde yenilikler:
+ * - Geçmişteki her kayda tıklayıp NOT ekleyebilirsin ("Not Ekle/Düzenle" butonu)
+ * - Silme ve kasa sıfırlama için confirm yerine özel modal kullanımı
+ * - Export/Import, localStorage kalıcılığı
  */
 
 // ---- Yardımcılar
 const STORAGE_KEY = "telefon_harcama_gruplari_v1";
 const fmt = (n) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(n ?? 0);
 const nowISO = () => new Date().toISOString();
+const uuid = () => (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
 
 function useLocalState(initial) {
   const [state, setState] = useState(() => {
@@ -40,17 +35,11 @@ function useLocalState(initial) {
   return [state, setState];
 }
 
-// ---- Tipler (yorum amaçlı)
-// state = {
-//   groups: [{ id, name, value, note, ticked, createdAt, updatedAt }],
-//   history: [{ id, ts, groupId, groupNameAtTheTime, groupValueAtTheTime, input, delta }],
-//   lastResetAt: ISOString | null
-// }
-
+// ---- Başlangıç durumu
 const starterState = {
   groups: [
-    { id: crypto.randomUUID(), name: "150", value: 150, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
-    { id: crypto.randomUUID(), name: "300", value: 300, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
+    { id: uuid(), name: "150", value: 150, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
+    { id: uuid(), name: "300", value: 300, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
   ],
   history: [],
   lastResetAt: null,
@@ -62,26 +51,19 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
 
-  // Yeni: Onay modalları
+  // Onay modalları
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const total = useMemo(() => state.history.reduce((acc, h) => acc + (h.delta || 0), 0), [state.history]);
 
+  // ---- Grup işlemleri
   const addGroup = () => {
     setState((s) => ({
       ...s,
       groups: [
         ...s.groups,
-        {
-          id: crypto.randomUUID(),
-          name: "Yeni Grup",
-          value: 0,
-          note: "",
-          ticked: false,
-          createdAt: nowISO(),
-          updatedAt: nowISO(),
-        },
+        { id: uuid(), name: "Yeni Grup", value: 0, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
       ],
     }));
   };
@@ -93,55 +75,49 @@ export default function App() {
     }));
   };
 
-  // Silme için modal akışı
   const confirmDeleteGroup = (id) => setPendingDeleteId(id);
   const doDeleteGroup = () => {
     if (!pendingDeleteId) return;
-    setState((s) => ({
-      ...s,
-      groups: s.groups.filter((g) => g.id !== pendingDeleteId),
-    }));
+    setState((s) => ({ ...s, groups: s.groups.filter((g) => g.id !== pendingDeleteId) }));
     setPendingDeleteId(null);
   };
 
-  const deleteGroup = (id) => {
-    if (!confirm("Grubu silmek istediğinize emin misiniz?")) return;
-    setState((s) => ({
-      ...s,
-      groups: s.groups.filter((g) => g.id !== id),
-      // İsteğe bağlı: o gruba ait geçmiş kaydı kalabilir; raporlama bütünlüğü için siliyoruz mu?
-      // Burada koruyoruz. İsterseniz filtreleyebilirsiniz.
-    }));
-  };
-
+  // ---- Geçmiş / kasa
   const pushHistory = ({ group, input }) => {
-    // Etki = (grup_değeri - girilen)
     const delta = (Number(group.value) || 0) - (Number(input) || 0);
     const rec = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       ts: nowISO(),
       groupId: group.id,
       groupNameAtTheTime: group.name,
       groupValueAtTheTime: Number(group.value) || 0,
       input: Number(input) || 0,
       delta,
+      note: "", // YENİ: geçmiş not alanı
     };
     setState((s) => ({ ...s, history: [rec, ...s.history] }));
   };
 
-  // Ortak kasa sıfırlama için modal akışı
+  const updateHistoryNote = (id, note) => {
+    setState((s) => ({
+      ...s,
+      history: s.history.map((h) => (h.id === id ? { ...h, note } : h)),
+    }));
+  };
+
   const requestResetCommon = () => setShowResetConfirm(true);
   const doResetCommon = () => {
     setState((s) => ({ ...s, history: [], lastResetAt: nowISO() }));
     setShowResetConfirm(false);
   };
 
+  // ---- Dışa / içe aktar
   const exportJSON = () => {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `harcama_gruplari_${new Date().toISOString().slice(0,10)}.json`;
+    a.download = `harcama_gruplari_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -173,10 +149,7 @@ export default function App() {
             >
               Toplam: <span className={total >= 0 ? "text-emerald-600" : "text-rose-600"}>{total >= 0 ? "+" : ""}{fmt(total)}</span>
             </button>
-            <button
-              className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100"
-              onClick={requestResetCommon}
-            >
+            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={requestResetCommon}>
               Sıfırla
             </button>
             <div className="w-px h-6 bg-zinc-200" />
@@ -196,8 +169,7 @@ export default function App() {
       {/* İçerik */}
       <main className="mx-auto max-w-3xl w-full px-4 py-4">
         <p className="text-sm text-zinc-600 mb-4">
-          Kural: Bir gruba sayısal değer girdiğinde, <strong>ortak kasaya etki</strong> = (grup değeri − girilen).
-          Grubu tiklemek yalnızca işaretlemedir; kasayı etkilemez.
+          Kural: Bir gruba sayısal değer girdiğinde, <strong>ortak kasaya etki</strong> = (grup değeri − girilen). Grubu tiklemek yalnızca işaretlemedir; kasayı etkilemez.
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -210,7 +182,7 @@ export default function App() {
       {/* Geçmiş paneli */}
       {showHistory && (
         <Modal onClose={() => setShowHistory(false)} title="İşlem Geçmişi (Son Sıfırlamadan Beri)">
-          <HistoryList history={state.history} />
+          <HistoryList history={state.history} onChangeNote={updateHistoryNote} />
         </Modal>
       )}
 
@@ -248,7 +220,7 @@ export default function App() {
           <div className="text-sm text-zinc-700">Toplam ve işlem geçmişi sıfırlanacak.</div>
           <div className="mt-3 flex justify-end gap-2">
             <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={() => setShowResetConfirm(false)}>Vazgeç</button>
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={doResetCommon}>Sıfırla</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={doResetCommon}>Sıırla</button>
           </div>
         </Modal>
       )}
@@ -394,7 +366,21 @@ function Modal({ title, children, onClose }) {
   );
 }
 
-function HistoryList({ history }) {
+function HistoryList({ history, onChangeNote }) {
+  const [editingId, setEditingId] = useState(null);
+  const [tempNote, setTempNote] = useState("");
+
+  const startEdit = (h) => {
+    setEditingId(h.id);
+    setTempNote(h.note || "");
+  };
+  const saveNote = () => {
+    if (!editingId) return;
+    onChangeNote?.(editingId, tempNote);
+    setEditingId(null);
+    setTempNote("");
+  };
+
   if (!history?.length) return <div className="text-sm text-zinc-500">Kayıt yok.</div>;
   return (
     <div className="max-h-[60vh] overflow-auto divide-y divide-zinc-100">
@@ -406,9 +392,34 @@ function HistoryList({ history }) {
             <div className="text-zinc-700">
               Etki: ({fmt(h.groupValueAtTheTime)} − {fmt(h.input)}) = {h.delta >= 0 ? "+" : ""}{fmt(h.delta)}
             </div>
+            {h.note ? (
+              <div className="text-xs text-zinc-600 mt-1">Not: {h.note}</div>
+            ) : (
+              <div className="text-xs text-zinc-400 mt-1">Not yok</div>
+            )}
+          </div>
+          <div className="ml-auto">
+            <button className="rounded-xl px-2.5 py-1 text-xs border border-zinc-300 hover:bg-zinc-100" onClick={() => startEdit(h)} title="Bu işleme not ekle/düzenle">
+              Not Ekle/Düzenle
+            </button>
           </div>
         </div>
       ))}
+
+      {editingId && (
+        <Modal onClose={() => setEditingId(null)} title="İşlem Notu">
+          <textarea
+            className="w-full h-32 p-3 border border-zinc-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            placeholder="Bu işleme kısa bir not ekleyin (örn. 'market', 'iade', 'nakit')"
+            value={tempNote}
+            onChange={(e) => setTempNote(e.target.value)}
+          />
+          <div className="mt-3 flex justify-end gap-2">
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={() => setEditingId(null)}>Vazgeç</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={saveNote}>Kaydet</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
