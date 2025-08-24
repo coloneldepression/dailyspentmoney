@@ -3,10 +3,13 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recha
 
 /**
  * Tek dosyalık React uygulaması (Vite uyumlu)
- * Bu sürümde yenilikler:
- * - Karanlık Mod (toggle)
+ * GÜNCEL: 
+ * - Dark/Light toggle düzeltildi
+ * - Ayarlar modalı çalışır
  * - Grup renkleri (7-8 seçenek)
- * - Geçmiş kayıtlarına etiket: gerekli / fuzuli / zorunlu
+ * - Her GRUP için "bekleyen girişler" (apply etmeden birden fazla değer ekle)
+ * - Her giriş için etiket: gerekli / fuzuli / zorunlu
+ * - Apply tıklandığında bekleyen girişler geçmişe tek tek işlenir
  * - Geçmiş penceresinde etiket dağılımı pie chart
  * - Haftalık otomatik yedekleme (JSON indirir)
  */
@@ -35,8 +38,10 @@ const getGroupStyle = (colorKey = "slate") => {
 };
 
 const applyDarkClass = (on) => {
-  const el = document.documentElement;
-  if (on) el.classList.add("dark"); else el.classList.remove("dark");
+  const html = document.documentElement;
+  const body = document.body;
+  if (on) { html.classList.add('dark'); body.classList.add('dark'); }
+  else { html.classList.remove('dark'); body.classList.remove('dark'); }
 };
 
 function useLocalState(initial) {
@@ -61,14 +66,14 @@ function useLocalState(initial) {
 // ---- Başlangıç durumu
 const starterState = {
   groups: [
-    { id: uuid(), name: "150", value: 150, note: "", color: "emerald", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
-    { id: uuid(), name: "300", value: 300, note: "", color: "sky",     ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
+    { id: uuid(), name: "150", value: 150, note: "", color: "emerald", ticked: false, pending: [], createdAt: nowISO(), updatedAt: nowISO() },
+    { id: uuid(), name: "300", value: 300, note: "", color: "sky",     ticked: false, pending: [], createdAt: nowISO(), updatedAt: nowISO() },
   ],
   history: [],
   lastResetAt: null,
   autoBackupEnabled: true,
   lastAutoBackupAt: null,
-  darkMode: true,
+  darkMode: false, // default light
 };
 
 export default function App() {
@@ -77,6 +82,7 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   // karanlık modu uygula
   useEffect(() => { applyDarkClass(!!state.darkMode); }, [state.darkMode]);
@@ -101,7 +107,7 @@ export default function App() {
       ...s,
       groups: [
         ...s.groups,
-        { id: uuid(), name: "Yeni Grup", value: 0, note: "", color: "slate", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
+        { id: uuid(), name: "Yeni Grup", value: 0, note: "", color: "slate", ticked: false, pending: [], createdAt: nowISO(), updatedAt: nowISO() },
       ],
     }));
   };
@@ -122,7 +128,7 @@ export default function App() {
   };
 
   // ---- Geçmiş / kasa
-  const pushHistory = ({ group, input, need = "gerekli" }) => {
+  const pushHistoryEntry = ({ group, input, need = "gerekli" }) => {
     const delta = (Number(group.value) || 0) - (Number(input) || 0);
     const rec = {
       id: uuid(),
@@ -133,9 +139,20 @@ export default function App() {
       input: Number(input) || 0,
       delta,
       note: "",
-      need, // gerekli | fuzuli | zorunlu
+      need,
     };
     setState((s) => ({ ...s, history: [rec, ...s.history] }));
+  };
+
+  // Bir grubun TÜM bekleyen girişlerini geçmişe uygula
+  const applyGroupPending = (groupId) => {
+    const g = state.groups.find((x) => x.id === groupId);
+    if (!g || !g.pending?.length) return;
+    for (const p of g.pending) {
+      pushHistoryEntry({ group: g, input: p.amount, need: p.need });
+    }
+    // bekleyenleri temizle
+    updateGroup(groupId, { pending: [] });
   };
 
   const updateHistoryRecord = (id, patch) => {
@@ -145,9 +162,6 @@ export default function App() {
     }));
   };
 
-  const requestResetCommon = () => setShowHistory(true);
-  const resetCommon = () => setShowResetConfirm(true);
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const doResetCommon = () => {
     setState((s) => ({ ...s, history: [], lastResetAt: nowISO() }));
     setShowResetConfirm(false);
@@ -193,7 +207,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100 flex flex-col">
       {/* Üst bar */}
-      <header className="sticky top-0 z-10 bg-white/90 dark:bg-zinc-900/80 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
+      <header className="sticky top-0 z-50 bg-white/90 dark:bg-zinc-900/80 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
         <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between gap-2">
           <div className="text-xl font-semibold">Ortak Kasa</div>
 
@@ -238,12 +252,18 @@ export default function App() {
       {/* İçerik */}
       <main className="mx-auto max-w-3xl w-full px-4 py-4">
         <p className="text-sm text-zinc-600 dark:text-zinc-300 mb-4">
-          Kural: Bir gruba sayısal değer girdiğinde, <strong>ortak kasaya etki</strong> = (grup değeri − girilen). Grubu tiklemek yalnızca işaretlemedir; kasayı etkilemez.
+          Kural: (ortak kasaya etki) = (grup değeri − girilen). Grubu tiklemek kasayı etkilemez.
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {state.groups.map((g) => (
-            <GroupCard key={g.id} group={g} onUpdate={updateGroup} onDelete={confirmDeleteGroup} onSubmitInput={pushHistory} />
+            <GroupCard
+              key={g.id}
+              group={g}
+              onUpdate={updateGroup}
+              onDelete={confirmDeleteGroup}
+              onApplyPending={() => applyGroupPending(g.id)}
+            />
           ))}
         </div>
       </main>
@@ -290,6 +310,23 @@ export default function App() {
         </Modal>
       )}
 
+      {/* Ayarlar modalı */}
+      {showSettings && (
+        <Modal onClose={() => setShowSettings(false)} title="Ayarlar">
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-sm">Haftalık otomatik yedekleme</div>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={!!state.autoBackupEnabled}
+                onChange={(e) => setState((s) => ({ ...s, autoBackupEnabled: e.target.checked }))}
+              />
+              {state.autoBackupEnabled ? "Açık" : "Kapalı"}
+            </label>
+          </div>
+        </Modal>
+      )}
+
       {/* Silme onayı modalı */}
       {pendingDeleteId && (
         <Modal onClose={() => setPendingDeleteId(null)} title="Grubu Sil">
@@ -317,13 +354,15 @@ export default function App() {
   );
 }
 
-function GroupCard({ group, onUpdate, onDelete, onSubmitInput }) {
+function GroupCard({ group, onUpdate, onDelete, onApplyPending }) {
   const [editing, setEditing] = useState(false);
   const [tempName, setTempName] = useState(group.name);
   const [tempValue, setTempValue] = useState(group.value);
   const [tempNote, setTempNote] = useState(group.note || "");
   const [tempColor, setTempColor] = useState(group.color || "slate");
-  const [input, setInput] = useState("");
+
+  // Bekleyen giriş eklemek için yerel alanlar
+  const [amount, setAmount] = useState("");
   const [need, setNeed] = useState("gerekli");
 
   useEffect(() => {
@@ -340,12 +379,20 @@ function GroupCard({ group, onUpdate, onDelete, onSubmitInput }) {
     setEditing(false);
   };
 
-  const submitInput = () => {
-    const n = Number(input);
+  const addPending = () => {
+    const n = Number(amount);
     if (Number.isNaN(n)) { alert("Geçerli bir sayı girin."); return; }
-    onSubmitInput({ group, input: n, need });
-    setInput("");
+    const next = [...(group.pending || []), { id: uuid(), amount: n, need }];
+    onUpdate(group.id, { pending: next });
+    setAmount("");
   };
+
+  const removePending = (pid) => {
+    const next = (group.pending || []).filter((p) => p.id !== pid);
+    onUpdate(group.id, { pending: next });
+  };
+
+  const clearPending = () => onUpdate(group.id, { pending: [] });
 
   return (
     <div className={`rounded-2xl border p-3 shadow-sm ${getGroupStyle(group.color)} dark:border-zinc-700`}>
@@ -380,30 +427,57 @@ function GroupCard({ group, onUpdate, onDelete, onSubmitInput }) {
         </div>
       </div>
 
+      {/* Bekleyen giriş ekleme alanı */}
       <div className="mt-3 flex items-center gap-2">
         <input
           inputMode="decimal"
-          placeholder="Sayı gir (ör. 170)"
+          placeholder="Sayı gir (ör. 70)"
           className="flex-1 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
         />
-        <button className="rounded-xl px-3 py-2 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={submitInput}>
-          Uygula
+        <select
+          className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-2 text-sm"
+          value={need}
+          onChange={(e)=>setNeed(e.target.value)}
+        >
+          {NEED_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <button className="rounded-xl px-3 py-2 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={addPending}>
+          Ekle
         </button>
       </div>
 
-      <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 flex items-center gap-2">
-        <span>İşlem etiketi:</span>
-        <select
-          className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1"
-          value={need}
-          onChange={(e) => setNeed(e.target.value)}
-        >
-          {NEED_TYPES.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
+      {/* Bekleyen liste */}
+      <div className="mt-2">
+        {(group.pending?.length ? group.pending : []).length === 0 ? (
+          <div className="text-xs text-zinc-500">Bekleyen giriş yok.</div>
+        ) : (
+          <div className="text-xs">
+            <div className="mb-1 text-zinc-600 dark:text-zinc-300">Bekleyen Girişler:</div>
+            <ul className="space-y-1">
+              {group.pending.map(p => (
+                <li key={p.id} className="flex items-center justify-between">
+                  <span>
+                    <strong>{fmt(p.amount)}</strong> 
+                    <span className="ml-2 px-2 py-0.5 rounded-full text-[11px] border border-zinc-300 dark:border-zinc-700">
+                      {p.need}
+                    </span>
+                  </span>
+                  <button className="px-2 py-0.5 rounded border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={()=>removePending(p.id)}>Sil</button>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-2 flex items-center gap-2">
+              <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={()=>onApplyPending(group.id)}>
+                Uygula (Geçmişe İşle)
+              </button>
+              <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={clearPending}>
+                Temizle
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {editing && (
