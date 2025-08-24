@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 
 /**
  * Tek dosyalık React uygulaması (Vite uyumlu)
  * Bu sürümde yenilikler:
- * - Geçmişteki her kayda tıklayıp NOT ekleyebilirsin ("Not Ekle/Düzenle" butonu)
- * - Silme ve kasa sıfırlama için confirm yerine özel modal kullanımı
- * - Export/Import, localStorage kalıcılığı
+ * - Karanlık Mod (toggle)
+ * - Grup renkleri (7-8 seçenek)
+ * - Geçmiş kayıtlarına etiket: gerekli / fuzuli / zorunlu
+ * - Geçmiş penceresinde etiket dağılımı pie chart
+ * - Haftalık otomatik yedekleme (JSON indirir)
  */
 
 // ---- Yardımcılar
@@ -13,6 +16,28 @@ const STORAGE_KEY = "telefon_harcama_gruplari_v1";
 const fmt = (n) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(n ?? 0);
 const nowISO = () => new Date().toISOString();
 const uuid = () => (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
+
+const NEED_TYPES = ["gerekli", "fuzuli", "zorunlu"];
+const PALETTE = [
+  { key: "slate",  name: "Gri",    bg: "bg-slate-50",   border: "border-slate-300",  text:"text-slate-900",  darkBg:"dark:bg-slate-800",   darkText:"dark:text-slate-100" },
+  { key: "emerald",name: "Yeşil",  bg: "bg-emerald-50", border: "border-emerald-300",text:"text-emerald-900",darkBg:"dark:bg-emerald-900/30",darkText:"dark:text-emerald-100" },
+  { key: "sky",    name: "Mavi",   bg: "bg-sky-50",     border: "border-sky-300",   text:"text-sky-900",    darkBg:"dark:bg-sky-900/30",   darkText:"dark:text-sky-100" },
+  { key: "amber",  name: "Amber",  bg: "bg-amber-50",   border: "border-amber-300", text:"text-amber-900",  darkBg:"dark:bg-amber-900/30", darkText:"dark:text-amber-100" },
+  { key: "violet", name: "Mor",    bg: "bg-violet-50",  border: "border-violet-300",text:"text-violet-900", darkBg:"dark:bg-violet-900/30",darkText:"dark:text-violet-100" },
+  { key: "rose",   name: "Pembe",  bg: "bg-rose-50",    border: "border-rose-300",  text:"text-rose-900",   darkBg:"dark:bg-rose-900/30",  darkText:"dark:text-rose-100" },
+  { key: "indigo", name: "Çivit",  bg: "bg-indigo-50",  border: "border-indigo-300",text:"text-indigo-900", darkBg:"dark:bg-indigo-900/30",darkText:"dark:text-indigo-100" },
+  { key: "orange", name: "Turuncu",bg:"bg-orange-50",   border: "border-orange-300",text:"text-orange-900",  darkBg:"dark:bg-orange-900/30", darkText:"dark:text-orange-100" },
+];
+
+const getGroupStyle = (colorKey = "slate") => {
+  const c = PALETTE.find((p) => p.key === colorKey) || PALETTE[0];
+  return `${c.bg} ${c.border} ${c.text} ${c.darkBg} ${c.darkText}`;
+};
+
+const applyDarkClass = (on) => {
+  const el = document.documentElement;
+  if (on) el.classList.add("dark"); else el.classList.remove("dark");
+};
 
 function useLocalState(initial) {
   const [state, setState] = useState(() => {
@@ -27,9 +52,7 @@ function useLocalState(initial) {
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {}
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
   }, [state]);
 
   return [state, setState];
@@ -38,11 +61,14 @@ function useLocalState(initial) {
 // ---- Başlangıç durumu
 const starterState = {
   groups: [
-    { id: uuid(), name: "150", value: 150, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
-    { id: uuid(), name: "300", value: 300, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
+    { id: uuid(), name: "150", value: 150, note: "", color: "emerald", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
+    { id: uuid(), name: "300", value: 300, note: "", color: "sky",     ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
   ],
   history: [],
   lastResetAt: null,
+  autoBackupEnabled: true,
+  lastAutoBackupAt: null,
+  darkMode: true,
 };
 
 export default function App() {
@@ -50,10 +76,22 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
 
-  // Onay modalları
-  const [pendingDeleteId, setPendingDeleteId] = useState(null);
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  // karanlık modu uygula
+  useEffect(() => { applyDarkClass(!!state.darkMode); }, [state.darkMode]);
+
+  // haftalık otomatik yedek (uygulama açıldığında kontrol)
+  useEffect(() => {
+    if (!state.autoBackupEnabled) return;
+    const last = state.lastAutoBackupAt ? new Date(state.lastAutoBackupAt).getTime() : 0;
+    const WEEK = 7 * 24 * 60 * 60 * 1000;
+    if (Date.now() - last > WEEK && state.history.length > 0) {
+      exportJSON();
+      setState((s) => ({ ...s, lastAutoBackupAt: nowISO() }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const total = useMemo(() => state.history.reduce((acc, h) => acc + (h.delta || 0), 0), [state.history]);
 
@@ -63,7 +101,7 @@ export default function App() {
       ...s,
       groups: [
         ...s.groups,
-        { id: uuid(), name: "Yeni Grup", value: 0, note: "", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
+        { id: uuid(), name: "Yeni Grup", value: 0, note: "", color: "slate", ticked: false, createdAt: nowISO(), updatedAt: nowISO() },
       ],
     }));
   };
@@ -75,6 +113,7 @@ export default function App() {
     }));
   };
 
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const confirmDeleteGroup = (id) => setPendingDeleteId(id);
   const doDeleteGroup = () => {
     if (!pendingDeleteId) return;
@@ -83,7 +122,7 @@ export default function App() {
   };
 
   // ---- Geçmiş / kasa
-  const pushHistory = ({ group, input }) => {
+  const pushHistory = ({ group, input, need = "gerekli" }) => {
     const delta = (Number(group.value) || 0) - (Number(input) || 0);
     const rec = {
       id: uuid(),
@@ -93,19 +132,22 @@ export default function App() {
       groupValueAtTheTime: Number(group.value) || 0,
       input: Number(input) || 0,
       delta,
-      note: "", // YENİ: geçmiş not alanı
+      note: "",
+      need, // gerekli | fuzuli | zorunlu
     };
     setState((s) => ({ ...s, history: [rec, ...s.history] }));
   };
 
-  const updateHistoryNote = (id, note) => {
+  const updateHistoryRecord = (id, patch) => {
     setState((s) => ({
       ...s,
-      history: s.history.map((h) => (h.id === id ? { ...h, note } : h)),
+      history: s.history.map((h) => (h.id === id ? { ...h, ...patch } : h)),
     }));
   };
 
-  const requestResetCommon = () => setShowResetConfirm(true);
+  const requestResetCommon = () => setShowHistory(true);
+  const resetCommon = () => setShowResetConfirm(true);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const doResetCommon = () => {
     setState((s) => ({ ...s, history: [], lastResetAt: nowISO() }));
     setShowResetConfirm(false);
@@ -134,33 +176,60 @@ export default function App() {
     }
   };
 
+  // ---- Grafik veri (etiket dağılımı)
+  const needStats = useMemo(() => {
+    const base = { gerekli: 0, fuzuli: 0, zorunlu: 0 };
+    for (const h of state.history) {
+      const k = h?.need || "gerekli";
+      base[k] = (base[k] || 0) + 1;
+    }
+    return [
+      { name: "gerekli", value: base.gerekli, color: "#10b981" },
+      { name: "fuzuli", value: base.fuzuli, color: "#f43f5e" },
+      { name: "zorunlu", value: base.zorunlu, color: "#f59e0b" },
+    ];
+  }, [state.history]);
+
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 flex flex-col">
+    <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100 flex flex-col">
       {/* Üst bar */}
-      <header className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-zinc-200">
+      <header className="sticky top-0 z-10 bg-white/90 dark:bg-zinc-900/80 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
         <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between gap-2">
           <div className="text-xl font-semibold">Ortak Kasa</div>
 
           <div className="flex items-center gap-2">
             <button
-              className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100"
+              className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
               onClick={() => setShowHistory(true)}
               title="Son sıfırlamadan beri tüm işlemler"
             >
-              Toplam: <span className={total >= 0 ? "text-emerald-600" : "text-rose-600"}>{total >= 0 ? "+" : ""}{fmt(total)}</span>
+              Toplam: <span className={total >= 0 ? "text-emerald-500" : "text-rose-400"}>{total >= 0 ? "+" : ""}{fmt(total)}</span>
             </button>
-            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={requestResetCommon}>
+            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => setShowResetConfirm(true)}>
               Sıfırla
             </button>
-            <div className="w-px h-6 bg-zinc-200" />
-            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={addGroup}>
+            <div className="w-px h-6 bg-zinc-200 dark:bg-zinc-800" />
+            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={addGroup}>
               Yeni Grup
             </button>
-            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={exportJSON}>
+            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={exportJSON}>
               Dışa Aktar
             </button>
-            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={() => setShowImport(true)}>
+            <button className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => setShowImport(true)}>
               İçe Aktar
+            </button>
+            <button
+              className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              onClick={() => setState((s) => ({ ...s, darkMode: !s.darkMode }))}
+              title="Karanlık Mod"
+            >
+              {state.darkMode ? "☾ Dark" : "☀︎ Light"}
+            </button>
+            <button
+              className="rounded-2xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              onClick={() => setShowSettings(true)}
+            >
+              Ayarlar
             </button>
           </div>
         </div>
@@ -168,7 +237,7 @@ export default function App() {
 
       {/* İçerik */}
       <main className="mx-auto max-w-3xl w-full px-4 py-4">
-        <p className="text-sm text-zinc-600 mb-4">
+        <p className="text-sm text-zinc-600 dark:text-zinc-300 mb-4">
           Kural: Bir gruba sayısal değer girdiğinde, <strong>ortak kasaya etki</strong> = (grup değeri − girilen). Grubu tiklemek yalnızca işaretlemedir; kasayı etkilemez.
         </p>
 
@@ -182,7 +251,25 @@ export default function App() {
       {/* Geçmiş paneli */}
       {showHistory && (
         <Modal onClose={() => setShowHistory(false)} title="İşlem Geçmişi (Son Sıfırlamadan Beri)">
-          <HistoryList history={state.history} onChangeNote={updateHistoryNote} />
+          {/* Özet grafik */}
+          <div className="mb-4">
+            <div className="text-sm text-zinc-600 dark:text-zinc-300 mb-2">Harcama Etiket Dağılımı</div>
+            <div className="h-48">
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie dataKey="value" data={needStats} innerRadius={45} outerRadius={70}>
+                    {needStats.map((e, i) => (
+                      <Cell key={i} fill={e.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <HistoryList history={state.history} onChange={(id, patch) => updateHistoryRecord(id, patch)} />
         </Modal>
       )}
 
@@ -190,13 +277,13 @@ export default function App() {
       {showImport && (
         <Modal onClose={() => setShowImport(false)} title="JSON İçe Aktar">
           <textarea
-            className="w-full h-48 p-3 border border-zinc-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            className="w-full h-48 p-3 border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-400"
             placeholder="Buraya JSON yapıştırın"
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
           />
           <div className="mt-3 flex justify-end gap-2">
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={importJSON}>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={importJSON}>
               Aktar
             </button>
           </div>
@@ -206,10 +293,10 @@ export default function App() {
       {/* Silme onayı modalı */}
       {pendingDeleteId && (
         <Modal onClose={() => setPendingDeleteId(null)} title="Grubu Sil">
-          <div className="text-sm text-zinc-700">Bu grubu silmek istediğinize emin misiniz?</div>
+          <div className="text-sm text-zinc-700 dark:text-zinc-300">Bu grubu silmek istediğinize emin misiniz?</div>
           <div className="mt-3 flex justify-end gap-2">
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={() => setPendingDeleteId(null)}>Vazgeç</button>
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-rose-200 text-rose-600 hover:bg-rose-50" onClick={doDeleteGroup}>Sil</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => setPendingDeleteId(null)}>Vazgeç</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-rose-200 text-rose-600 dark:border-rose-900/40 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-900/20" onClick={doDeleteGroup}>Sil</button>
           </div>
         </Modal>
       )}
@@ -217,15 +304,15 @@ export default function App() {
       {/* Sıfırlama onayı modalı */}
       {showResetConfirm && (
         <Modal onClose={() => setShowResetConfirm(false)} title="Ortak Kasayı Sıfırla">
-          <div className="text-sm text-zinc-700">Toplam ve işlem geçmişi sıfırlanacak.</div>
+          <div className="text-sm text-zinc-700 dark:text-zinc-300">Toplam ve işlem geçmişi sıfırlanacak.</div>
           <div className="mt-3 flex justify-end gap-2">
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={() => setShowResetConfirm(false)}>Vazgeç</button>
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={doResetCommon}>Sıırla</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => setShowResetConfirm(false)}>Vazgeç</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={doResetCommon}>Sıfırla</button>
           </div>
         </Modal>
       )}
 
-      <footer className="py-6 text-center text-xs text-zinc-500">Yerel kullanım için — veriler tarayıcıda saklanır.</footer>
+      <footer className="py-6 text-center text-xs text-zinc-500 dark:text-zinc-400">Yerel kullanım için — veriler tarayıcıda saklanır.</footer>
     </div>
   );
 }
@@ -235,41 +322,38 @@ function GroupCard({ group, onUpdate, onDelete, onSubmitInput }) {
   const [tempName, setTempName] = useState(group.name);
   const [tempValue, setTempValue] = useState(group.value);
   const [tempNote, setTempNote] = useState(group.note || "");
+  const [tempColor, setTempColor] = useState(group.color || "slate");
   const [input, setInput] = useState("");
+  const [need, setNeed] = useState("gerekli");
 
   useEffect(() => {
     setTempName(group.name);
     setTempValue(group.value);
     setTempNote(group.note || "");
+    setTempColor(group.color || "slate");
   }, [group.id]);
 
   const submitEdit = () => {
     const v = Number(tempValue);
-    if (Number.isNaN(v)) {
-      alert("Geçerli bir sayısal değer girin.");
-      return;
-    }
-    onUpdate(group.id, { name: tempName?.trim() || String(v), value: v, note: tempNote });
+    if (Number.isNaN(v)) { alert("Geçerli bir sayısal değer girin."); return; }
+    onUpdate(group.id, { name: tempName?.trim() || String(v), value: v, note: tempNote, color: tempColor });
     setEditing(false);
   };
 
   const submitInput = () => {
     const n = Number(input);
-    if (Number.isNaN(n)) {
-      alert("Geçerli bir sayı girin.");
-      return;
-    }
-    onSubmitInput({ group, input: n });
+    if (Number.isNaN(n)) { alert("Geçerli bir sayı girin."); return; }
+    onSubmitInput({ group, input: n, need });
     setInput("");
   };
 
   return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm">
+    <div className={`rounded-2xl border p-3 shadow-sm ${getGroupStyle(group.color)} dark:border-zinc-700`}>
       <div className="flex items-start gap-2">
         <label className="flex items-center gap-2 select-none">
           <input
             type="checkbox"
-            className="size-5 rounded-md border border-zinc-300"
+            className="size-5 rounded-md border border-zinc-300 dark:border-zinc-700"
             checked={!!group.ticked}
             onChange={(e) => onUpdate(group.id, { ticked: e.target.checked })}
             title="Tiklemek kasayı etkilemez"
@@ -287,10 +371,10 @@ function GroupCard({ group, onUpdate, onDelete, onSubmitInput }) {
           </div>
         </label>
         <div className="ml-auto flex items-center gap-2">
-          <button className="rounded-xl px-2.5 py-1 text-xs border border-zinc-300 hover:bg-zinc-100" onClick={() => setEditing(true)}>
+          <button className="rounded-xl px-2.5 py-1 text-xs border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => setEditing(true)}>
             Düzenle
           </button>
-          <button className="rounded-xl px-2.5 py-1 text-xs border border-rose-200 text-rose-600 hover:bg-rose-50" onClick={() => onDelete(group.id)}>
+          <button className="rounded-xl px-2.5 py-1 text-xs border border-rose-200 text-rose-600 dark:border-rose-900/40 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-900/20" onClick={() => onDelete(group.id)}>
             Sil
           </button>
         </div>
@@ -300,45 +384,73 @@ function GroupCard({ group, onUpdate, onDelete, onSubmitInput }) {
         <input
           inputMode="decimal"
           placeholder="Sayı gir (ör. 170)"
-          className="flex-1 rounded-xl border border-zinc-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          className="flex-1 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400"
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
-        <button className="rounded-xl px-3 py-2 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={submitInput}>
+        <button className="rounded-xl px-3 py-2 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={submitInput}>
           Uygula
         </button>
+      </div>
+
+      <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-300 flex items-center gap-2">
+        <span>İşlem etiketi:</span>
+        <select
+          className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1"
+          value={need}
+          onChange={(e) => setNeed(e.target.value)}
+        >
+          {NEED_TYPES.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
       </div>
 
       {editing && (
         <Modal onClose={() => setEditing(false)} title="Grubu Düzenle">
           <div className="grid gap-3">
             <div className="grid gap-1">
-              <label className="text-xs text-zinc-600">Ad (örn. 150). Ad, isteğe bağlıdır.</label>
+              <label className="text-xs text-zinc-600 dark:text-zinc-300">Ad (örn. 150). Ad, isteğe bağlıdır.</label>
               <input
-                className="rounded-xl border border-zinc-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                className="rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                 value={tempName}
                 onChange={(e) => setTempName(e.target.value)}
               />
             </div>
             <div className="grid gap-1">
-              <label className="text-xs text-zinc-600">Atanan sayısal değer</label>
+              <label className="text-xs text-zinc-600 dark:text-zinc-300">Atanan sayısal değer</label>
               <input
                 inputMode="decimal"
-                className="rounded-xl border border-zinc-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                className="rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                 value={tempValue}
                 onChange={(e) => setTempValue(e.target.value)}
               />
             </div>
             <div className="grid gap-1">
-              <label className="text-xs text-zinc-600">Not</label>
+              <label className="text-xs text-zinc-600 dark:text-zinc-300">Not</label>
               <textarea
-                className="rounded-xl border border-zinc-300 px-3 py-2 h-24 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                className="rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 h-24 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                 value={tempNote}
                 onChange={(e) => setTempNote(e.target.value)}
               />
             </div>
+            <div className="grid gap-1">
+              <label className="text-xs text-zinc-600 dark:text-zinc-300">Renk</label>
+              <div className="flex flex-wrap gap-2">
+                {PALETTE.map((p) => (
+                  <button
+                    key={p.key}
+                    type="button"
+                    className={`px-2 py-1 rounded-lg border ${p.border} ${p.bg} ${p.text} ${p.darkBg} ${p.darkText} ${tempColor === p.key ? "ring-2 ring-zinc-400" : ""}`}
+                    onClick={() => setTempColor(p.key)}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="flex justify-end gap-2">
-              <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={submitEdit}>
+              <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={submitEdit}>
                 Kaydet
               </button>
             </div>
@@ -353,10 +465,10 @@ function Modal({ title, children, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6">
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
-      <div className="relative w-full sm:max-w-lg sm:rounded-2xl bg-white shadow-xl border border-zinc-200 p-4 sm:p-5">
+      <div className="relative w-full sm:max-w-lg sm:rounded-2xl bg-white dark:bg-zinc-900 shadow-xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5">
         <div className="flex items-center justify-between gap-3">
           <div className="text-base font-semibold">{title}</div>
-          <button className="rounded-xl px-2 py-1 text-xs border border-zinc-300 hover:bg-zinc-100" onClick={onClose}>
+          <button className="rounded-xl px-2 py-1 text-xs border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={onClose}>
             Kapat
           </button>
         </div>
@@ -366,57 +478,95 @@ function Modal({ title, children, onClose }) {
   );
 }
 
-function HistoryList({ history, onChangeNote }) {
+function HistoryList({ history, onChange }) {
   const [editingId, setEditingId] = useState(null);
   const [tempNote, setTempNote] = useState("");
+  const [tempNeed, setTempNeed] = useState("gerekli");
+
+  const needColor = (t) =>
+    t === "gerekli"
+      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-100"
+      : t === "fuzuli"
+      ? "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-100"
+      : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-100";
 
   const startEdit = (h) => {
     setEditingId(h.id);
     setTempNote(h.note || "");
+    setTempNeed(h.need || "gerekli");
   };
-  const saveNote = () => {
+
+  const save = () => {
     if (!editingId) return;
-    onChangeNote?.(editingId, tempNote);
+    onChange?.(editingId, { note: tempNote, need: tempNeed });
     setEditingId(null);
     setTempNote("");
+    setTempNeed("gerekli");
   };
 
   if (!history?.length) return <div className="text-sm text-zinc-500">Kayıt yok.</div>;
+
   return (
-    <div className="max-h-[60vh] overflow-auto divide-y divide-zinc-100">
+    <div className="max-h-[60vh] overflow-auto divide-y divide-zinc-100 dark:divide-zinc-800">
       {history.map((h) => (
-        <div key={h.id} className="py-2 text-sm flex items-start gap-3">
-          <div className="min-w-28 text-xs text-zinc-500 mt-0.5">{new Date(h.ts).toLocaleString()}</div>
-          <div className="flex-1">
-            <div className="font-medium">{h.groupNameAtTheTime} <span className="text-xs text-zinc-500">(değer: {fmt(h.groupValueAtTheTime)})</span></div>
-            <div className="text-zinc-700">
-              Etki: ({fmt(h.groupValueAtTheTime)} − {fmt(h.input)}) = {h.delta >= 0 ? "+" : ""}{fmt(h.delta)}
+        <div key={h.id} className="py-2 text-sm">
+          <div className="flex items-start gap-3">
+            <div className="min-w-28 text-xs text-zinc-500 mt-0.5">{new Date(h.ts).toLocaleString()}</div>
+            <div className="flex-1">
+              <div className="font-medium">
+                {h.groupNameAtTheTime}
+                <span className="text-xs text-zinc-500 ml-2">(değer: {fmt(h.groupValueAtTheTime)})</span>
+              </div>
+              <div className="text-zinc-700 dark:text-zinc-200">
+                Etki: ({fmt(h.groupValueAtTheTime)} − {fmt(h.input)}) = {h.delta >= 0 ? "+" : ""}{fmt(h.delta)}
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <span className={`inline-block text-[11px] px-2 py-0.5 rounded-full ${needColor(h.need || "gerekli")}`}>
+                  {h.need || "gerekli"}
+                </span>
+                {h.note ? (
+                  <span className="text-xs text-zinc-600 dark:text-zinc-300">Not: {h.note}</span>
+                ) : (
+                  <span className="text-xs text-zinc-400">Not yok</span>
+                )}
+              </div>
             </div>
-            {h.note ? (
-              <div className="text-xs text-zinc-600 mt-1">Not: {h.note}</div>
-            ) : (
-              <div className="text-xs text-zinc-400 mt-1">Not yok</div>
-            )}
-          </div>
-          <div className="ml-auto">
-            <button className="rounded-xl px-2.5 py-1 text-xs border border-zinc-300 hover:bg-zinc-100" onClick={() => startEdit(h)} title="Bu işleme not ekle/düzenle">
-              Not Ekle/Düzenle
-            </button>
+            <div className="ml-auto">
+              <button
+                className="rounded-xl px-2.5 py-1 text-xs border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                onClick={() => startEdit(h)}
+                title="Bu işleme not/etiket ekle-düzenle"
+              >
+                Düzenle
+              </button>
+            </div>
           </div>
         </div>
       ))}
 
       {editingId && (
-        <Modal onClose={() => setEditingId(null)} title="İşlem Notu">
+        <Modal onClose={() => setEditingId(null)} title="İşlem Düzenle">
           <textarea
-            className="w-full h-32 p-3 border border-zinc-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            className="w-full h-32 p-3 border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-400"
             placeholder="Bu işleme kısa bir not ekleyin (örn. 'market', 'iade', 'nakit')"
             value={tempNote}
             onChange={(e) => setTempNote(e.target.value)}
           />
+          <div className="mt-3 text-sm flex items-center gap-2">
+            <span>Etiket:</span>
+            <select
+              className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1"
+              value={tempNeed}
+              onChange={(e) => setTempNeed(e.target.value)}
+            >
+              {NEED_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </div>
           <div className="mt-3 flex justify-end gap-2">
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={() => setEditingId(null)}>Vazgeç</button>
-            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 hover:bg-zinc-100" onClick={saveNote}>Kaydet</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => setEditingId(null)}>Vazgeç</button>
+            <button className="rounded-xl px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={save}>Kaydet</button>
           </div>
         </Modal>
       )}
