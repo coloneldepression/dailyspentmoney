@@ -536,17 +536,42 @@ function GroupCard({ group, onUpdate, onDelete, onApplyPending }) {
 }
 
 function Modal({ title, children, onClose }) {
+  // Modal açıkken arka plan scroll kilidi
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6">
-      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
-      <div className="relative w-full sm:max-w-lg sm:rounded-2xl bg-white dark:bg-zinc-900 shadow-xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-base font-semibold">{title}</div>
-          <button className="rounded-xl px-2 py-1 text-xs border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={onClose}>
-            Kapat
-          </button>
+    <div className="fixed inset-0 z-50 flex sm:items-center sm:justify-center">
+      {/* Arkaplan */}
+      <div className="absolute inset-0 bg-black/35" onClick={onClose} />
+
+      {/* İçerik: Mobilde bottom-sheet, desktop'ta merkez */}
+      <div
+        className="
+          relative mt-auto w-full rounded-t-2xl bg-white dark:bg-zinc-900
+          shadow-xl border border-zinc-200 dark:border-zinc-800
+          p-4 sm:p-5
+          sm:mt-0 sm:rounded-2xl sm:max-w-lg sm:w-full
+          max-h-[85svh] overflow-y-auto
+        "
+      >
+        <div className="sticky top-0 -mx-4 -mt-4 sm:-mx-5 sm:-mt-5 px-4 sm:px-5 pt-4 sm:pt-5 pb-3 bg-white/90 dark:bg-zinc-900/90 backdrop-blur rounded-t-2xl sm:rounded-t-2xl border-b border-zinc-200 dark:border-zinc-800">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-base font-semibold">{title}</div>
+            <button
+              className="rounded-xl px-2 py-1 text-xs border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              onClick={onClose}
+            >
+              Kapat
+            </button>
+          </div>
         </div>
+
         <div className="mt-3">{children}</div>
+        <div className="h-2" /> {/* alt nefes payı */}
       </div>
     </div>
   );
